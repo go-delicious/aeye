@@ -1,0 +1,24 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "aeye",
+            "request": "launch",
+            "type": "dart",
+            "program": "lib/main.dart",
+            "args": []
+        },
+        {
+            "name": "aeye (profile mode)",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "profile"
+        },
+        {
+            "name": "aeye (release mode)",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "release"
+        }
+    ]
+} 
