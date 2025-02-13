@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import '../services/bluetooth_service.dart';
 import 'settings_controller.dart';
 import 'dart:async';
+import '../services/llm_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Displays the various settings that can be customized by the user.
 ///
@@ -31,12 +33,20 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
   BrilliantConnectionState _connectionState = BrilliantConnectionState.disconnected;
   BrilliantScannedDevice? _connectedDevice;
   int? _batteryLevel;
+  LLMService? _llmService;
+  Timer? _logsRefreshTimer;
+  List<Map<String, dynamic>> _logs = [];
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initializeBluetooth();
+    _initializeLLMService();
+    // Refresh logs every 5 seconds
+    _logsRefreshTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      _refreshLogs();
+    });
   }
 
   @override
@@ -48,6 +58,7 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
     _connectionSubscription?.cancel();
     _batterySubscription?.cancel();
     _bluetoothService.dispose();
+    _logsRefreshTimer?.cancel();
     super.dispose();
   }
 
@@ -79,6 +90,11 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
     if (_isScanning) {
       await _stopScan();
       if (!mounted) return;
+      setState(() {
+        _isScanning = false;
+        _scanTimeLeft = 0;
+      });
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Scan cancelled'),
@@ -221,14 +237,15 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
   Future<void> _stopScan() async {
     try {
       _scanSubscription?.cancel();
+      _scanTimer?.cancel();
       await _bluetoothService.stopScan();
     } finally {
-      _scanTimer?.cancel();
       if (mounted) {
         setState(() {
           _isScanning = false;
           _scanTimeLeft = 0;
         });
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
       }
     }
   }
@@ -301,6 +318,38 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
     }
   }
 
+  Future<void> _initializeLLMService() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final apiKey = prefs.getString('openrouter_api_key');
+      if (apiKey != null && apiKey.isNotEmpty) {
+        setState(() {
+          _llmService = LLMService(apiKey: apiKey);
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _error = e.toString();
+      });
+    }
+  }
+
+  Future<void> _refreshLogs() async {
+    if (_llmService != null) {
+      final logs = await _llmService!.getLogs();
+      setState(() {
+        _logs = logs;
+      });
+    }
+  }
+
+  Future<void> _clearLogs() async {
+    if (_llmService != null) {
+      await _llmService!.clearLogs();
+      await _refreshLogs();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -313,6 +362,8 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
           _buildThemeSection(),
           const Divider(),
           _buildBluetoothSection(),
+          const Divider(),
+          _buildLogsSection(),
         ],
       ),
     );
@@ -592,6 +643,77 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
                 ),
               ],
             ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLogsSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              'API Logs',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            TextButton.icon(
+              icon: const Icon(Icons.delete_outline),
+              label: const Text('Clear'),
+              onPressed: _clearLogs,
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Card(
+          child: Container(
+            height: 300,
+            padding: const EdgeInsets.all(8),
+            child: _logs.isEmpty
+                ? const Center(
+                    child: Text('No logs available'),
+                  )
+                : ListView.builder(
+                    itemCount: _logs.length,
+                    itemBuilder: (context, index) {
+                      final log = _logs[index];
+                      final timestamp = DateTime.parse(log['timestamp'] as String).toLocal();
+                      final isError = log['isError'] as bool;
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '${timestamp.hour}:${timestamp.minute}:${timestamp.second}',
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                fontSize: 12,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                log['message'] as String,
+                                style: TextStyle(
+                                  color: isError 
+                                      ? Theme.of(context).colorScheme.error
+                                      : null,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
           ),
         ),
       ],

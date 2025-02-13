@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'package:http/http.dart' as http;
+import 'dart:typed_data';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:dio/dio.dart';
 
@@ -150,12 +150,36 @@ class LLMResponse {
 
     final usage = json['usage'] as Map<String, dynamic>? ?? {};
     final model = json['model'] as String? ?? 'unknown';
-    final choices = json['choices'] as List<dynamic>;
-    final firstChoice = choices.isNotEmpty ? choices[0] as Map<String, dynamic> : {};
-    final message = firstChoice['message'] as Map<String, dynamic>? ?? {};
+    
+    // Add type checking for choices
+    final choices = json['choices'];
+    if (choices == null) {
+      throw FormatException('Invalid JSON: required "choices" field is missing in $json');
+    }
+    if (choices is! List) {
+      throw FormatException('Invalid JSON: "choices" must be a List but was ${choices.runtimeType} in $json');
+    }
+    if (choices.isEmpty) {
+      throw FormatException('Invalid JSON: "choices" list is empty in $json');
+    }
+
+    final firstChoice = choices[0];
+    if (firstChoice is! Map<String, dynamic>) {
+      throw FormatException('Invalid JSON: first choice must be a Map but was ${firstChoice.runtimeType} in $json');
+    }
+
+    final message = firstChoice['message'];
+    if (message is! Map<String, dynamic>) {
+      throw FormatException('Invalid JSON: "message" must be a Map but was ${message?.runtimeType} in $json');
+    }
+
+    final content = message['content'];
+    if (content is! String) {
+      throw FormatException('Invalid JSON: "content" must be a String but was ${content?.runtimeType} in $json');
+    }
 
     return LLMResponse(
-      content: message['content'] as String? ?? '',
+      content: content,
       model: model,
       promptTokens: parseInt(usage['prompt_tokens']),
       completionTokens: parseInt(usage['completion_tokens']),
@@ -177,26 +201,57 @@ class LLMResponse {
 }
 
 class LLMService {
-  static const String _baseUrl = 'https://openrouter.ai/api/v1';
-  static const String _apiKeyPrefKey = 'openrouter_api_key';
-  static const String _modelPrefKey = 'selected_model';
-  static const String _modelsCacheKey = 'models_cache';
-  static const Duration _modelsCacheExpiry = Duration(minutes: 2);
-  static const String _fallbackVisionModel = 'google/gemini-2.0-pro-exp-02-05:free';
+  final Dio _dio;
+  static const String _logsPrefKey = 'llm_service_logs';
+  static const int _maxLogs = 100;  // Keep last 100 logs
 
-  ModelInfo? _selectedModelInfo;
-  final Dio _dio = Dio();
-  String? _apiKey;
+  LLMService({
+    required String apiKey,
+    String baseUrl = 'https://openrouter.ai/api/v1',
+  }) : _dio = Dio(BaseOptions(
+          baseUrl: baseUrl,
+          headers: {
+            'HTTP-Referer': 'https://github.com/go-delicious/aeye',
+            'X-Title': 'AEye App',
+            'Authorization': 'Bearer $apiKey',
+            'Content-Type': 'application/json',
+          },
+        ));
 
-  Future<String?> _getApiKey() async {
+  Future<void> _addLog(String message, {bool isError = false}) async {
     final prefs = await SharedPreferences.getInstance();
-    _apiKey = prefs.getString(_apiKeyPrefKey);
-    return _apiKey;
+    final logs = await getLogs();
+    
+    logs.insert(0, {
+      'timestamp': DateTime.now().toIso8601String(),
+      'message': message,
+      'isError': isError,
+    });
+
+    // Keep only the last _maxLogs entries
+    if (logs.length > _maxLogs) {
+      logs.removeRange(_maxLogs, logs.length);
+    }
+
+    await prefs.setString(_logsPrefKey, jsonEncode(logs));
   }
 
-  Future<String> _getSelectedModel() async {
+  Future<List<Map<String, dynamic>>> getLogs() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(_modelPrefKey) ?? 'google/gemini-2.0-pro-exp-02-05:free';
+    final logsJson = prefs.getString(_logsPrefKey);
+    if (logsJson == null) return [];
+
+    try {
+      final List<dynamic> decoded = jsonDecode(logsJson);
+      return decoded.cast<Map<String, dynamic>>();
+    } catch (e) {
+      return [];
+    }
+  }
+
+  Future<void> clearLogs() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_logsPrefKey);
   }
 
   Future<void> _cacheModels(List<ModelInfo> models) async {
@@ -217,18 +272,18 @@ class LLMService {
         'architecture': m.architecture,
       }).toList(),
     };
-    await prefs.setString(_modelsCacheKey, jsonEncode(cache));
+    await prefs.setString('models_cache', jsonEncode(cache));
   }
 
   Future<List<ModelInfo>?> _getCachedModels() async {
     final prefs = await SharedPreferences.getInstance();
-    final cacheJson = prefs.getString(_modelsCacheKey);
+    final cacheJson = prefs.getString('models_cache');
     if (cacheJson == null) return null;
 
     try {
       final cache = jsonDecode(cacheJson) as Map<String, dynamic>;
       final timestamp = DateTime.parse(cache['timestamp'] as String);
-      if (DateTime.now().difference(timestamp) > _modelsCacheExpiry) {
+      if (DateTime.now().difference(timestamp) > const Duration(minutes: 2)) {
         return null;  // Cache expired
       }
 
@@ -236,7 +291,6 @@ class LLMService {
           .map((m) => ModelInfo.fromJson(m as Map<String, dynamic>))
           .toList();
     } catch (e) {
-      
       return null;  // Invalid cache
     }
   }
@@ -249,20 +303,7 @@ class LLMService {
         return cachedModels;
       }
 
-      final apiKey = await _getApiKey();
-      if (apiKey == null || apiKey.isEmpty) {
-        throw Exception('API key not found. Please set your OpenRouter API key in the Account settings.');
-      }
-
-      final response = await _dio.get(
-        '$_baseUrl/models',
-        options: Options(
-          headers: {
-            'Authorization': 'Bearer $apiKey',
-            'HTTP-Referer': 'https://github.com/yourusername/aeye',
-          },
-        ),
-      );
+      final response = await _dio.get('/models');
 
       if (response.statusCode == 200) {
         final data = response.data;
@@ -289,16 +330,14 @@ class LLMService {
     }
   }
 
-  Future<ModelInfo?> _getSelectedModelInfo() async {
-    if (_selectedModelInfo != null) return _selectedModelInfo;
-    
-    final modelId = await _getSelectedModel();
-    final models = await getAvailableModels();
-    _selectedModelInfo = models.firstWhere(
-      (m) => m.id == modelId,
-      orElse: () => models.first,
-    );
-    return _selectedModelInfo;
+  Future<String> _getSelectedModel() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('selected_model') ?? 'google/gemini-2.0-flash-001';
+  }
+
+  Future<String> _getSelectedImageModel() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('selected_image_model') ?? 'google/gemini-2.0-flash-001';
   }
 
   Future<LLMResponse> sendMessage(String message, {
@@ -307,262 +346,205 @@ class LLMService {
     String? mimeType,
   }) async {
     if (stream) {
-      throw Exception('Use streamMessage for streaming responses');
+      throw Exception('Use streamChat for streaming responses');
     }
 
-    final apiKey = await _getApiKey();
-    if (apiKey == null || apiKey.isEmpty) {
-      throw Exception('API key not found. Please set your OpenRouter API key in the Account settings.');
-    }
+    final model = await (base64Image != null ? _getSelectedImageModel() : _getSelectedModel());
+    await _addLog('Sending message to model: $model${base64Image != null ? " (with image)" : ""}');
 
-    final selectedModel = await _getSelectedModelInfo();
-    if (selectedModel == null) {
-      throw Exception('No model selected');
-    }
-
-    final List<Map<String, dynamic>> messages = [];
-    String? imageDescription;
-    bool usedFallback = false;
-    
-    if (base64Image != null) {
-      if (!selectedModel.supportsVision) {
-        usedFallback = true;
-        // Use fallback vision model to get image description
-        imageDescription = await _getImageDescription(
-          message,
-          base64Image,
-          mimeType ?? 'image/jpeg',
-          apiKey,
-        );
-        
-        // Add the image description to the message
-        messages.add({
-          'role': 'system',
-          'content': 'The following is a description of an image that was provided: $imageDescription',
-        });
-        
-        // Add the user's message
-        if (message.isNotEmpty) {
-          messages.add({
-            'role': 'user',
-            'content': message,
-          });
-        }
-      } else {
-        // Model supports vision, add image directly
-        messages.add({
-          'role': 'user',
-          'content': [
+    final messageContent = base64Image != null
+        ? [
+            {'type': 'text', 'text': message},
             {
               'type': 'image_url',
               'image_url': {
-                'url': 'data:$mimeType;base64,$base64Image'
-              }
-            }
-          ]
-        });
-        
-        if (message.isNotEmpty) {
-          messages.add({
-            'role': 'user',
-            'content': message,
-          });
-        }
-      }
-    } else if (message.isNotEmpty) {
-      messages.add({
-        'role': 'user',
-        'content': message,
-      });
-    }
-
-    final response = await http.post(
-      Uri.parse('$_baseUrl/chat/completions'),
-      headers: {
-        'Authorization': 'Bearer $apiKey',
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://github.com/yourusername/aeye',
-      },
-      body: jsonEncode({
-        'model': selectedModel.id,
-        'messages': messages,
-      }),
-    );
-
-    if (response.statusCode == 200) {
-      final jsonResponse = jsonDecode(response.body);
-      // Add fallback information to the response
-      jsonResponse['used_fallback_model'] = usedFallback;
-      jsonResponse['image_description'] = imageDescription;
-      return LLMResponse.fromJson(jsonResponse);
-    } else {
-      throw Exception('Failed to send message: ${response.body}');
-    }
-  }
-
-  Future<String> _getImageDescription(
-    String userPrompt,
-    String base64Image,
-    String mimeType,
-    String apiKey,
-  ) async {
-    final prompt = userPrompt.isEmpty 
-        ? 'Please provide a detailed description of this image.'
-        : 'Please describe this image in detail, focusing on aspects relevant to the following question or request: $userPrompt';
-
-    final response = await http.post(
-      Uri.parse('$_baseUrl/chat/completions'),
-      headers: {
-        'Authorization': 'Bearer $apiKey',
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://github.com/yourusername/aeye',
-      },
-      body: jsonEncode({
-        'model': _fallbackVisionModel,
-        'messages': [
-          {
-            'role': 'user',
-            'content': [
-              {
-                'type': 'image_url',
-                'image_url': {
-                  'url': 'data:$mimeType;base64,$base64Image'
-                }
+                'url': 'data:${mimeType ?? "image/jpeg"};base64,$base64Image',
               },
-              {
-                'type': 'text',
-                'text': prompt,
-              }
-            ]
-          }
-        ],
-      }),
-    );
+            },
+          ]
+        : message;
 
-    if (response.statusCode == 200) {
-      final jsonResponse = jsonDecode(response.body);
-      final description = LLMResponse.fromJson(jsonResponse).content;
-      return description;
-    } else {
-      throw Exception('Failed to get image description: ${response.body}');
+    try {
+      final response = await _dio.post(
+        '/chat/completions',
+        data: {
+          'model': model,
+          'messages': [
+            {
+              'role': 'user',
+              'content': messageContent,
+            },
+          ],
+          'max_tokens': 150,
+          'provider': {
+            'data_collection': 'deny',
+            'require_parameters': true,
+            'allow_fallbacks': false,
+          },
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final jsonResponse = response.data;
+        await _addLog('Message sent successfully');
+        return LLMResponse.fromJson(jsonResponse);
+      } else {
+        final error = 'Failed to send message: ${response.statusCode}';
+        await _addLog(error, isError: true);
+        throw Exception(error);
+      }
+    } on DioException catch (e) {
+      String errorMessage;
+      if (e.response?.statusCode == 429) {
+        errorMessage = 'Rate limit exceeded. Please wait a moment before trying again.';
+      } else {
+        errorMessage = 'API Error: ${e.response?.data?['error']?['message'] ?? e.message}';
+      }
+      await _addLog(errorMessage, isError: true);
+      throw Exception(errorMessage);
     }
   }
 
-  Stream<String> streamMessage(String message, {
+  Future<String> analyzeImage({
+    required Uint8List imageBytes,
+    required String prompt,
+  }) async {
+    try {
+      final base64Image = base64Encode(imageBytes);
+      final model = await _getSelectedImageModel();
+      await _addLog('Analyzing image with model: $model');
+
+      final response = await _dio.post(
+        '/chat/completions',
+        data: {
+          'model': model,
+          'messages': [
+            {
+              'role': 'user',
+              'content': [
+                {'type': 'text', 'text': prompt},
+                {
+                  'type': 'image_url',
+                  'image_url': {
+                    'url': 'data:image/jpeg;base64,$base64Image',
+                  },
+                },
+              ],
+            },
+          ],
+          'max_tokens': 150,
+          'provider': {
+            'data_collection': 'deny',
+            'require_parameters': true,
+            'allow_fallbacks': false,
+          },
+        },
+      );
+
+      if (response.statusCode == 200) {
+        if (response.data == null || !response.data.containsKey('choices')) {
+          final error = 'Invalid API response: missing choices field';
+          await _addLog(error, isError: true);
+          throw error;
+        }
+        final choices = response.data['choices'] as List;
+        if (choices.isEmpty) {
+          final error = 'Invalid API response: empty choices list';
+          await _addLog(error, isError: true);
+          throw error;
+        }
+        final content = choices[0]['message']['content'] as String;
+        await _addLog('Image analysis completed successfully');
+        return content.trim();
+      } else {
+        final error = 'Failed to analyze image: ${response.statusCode}';
+        await _addLog(error, isError: true);
+        throw error;
+      }
+    } on DioException catch (e) {
+      String errorMessage;
+      if (e.response?.statusCode == 429) {
+        errorMessage = 'Rate limit exceeded. Please wait a moment before trying again.';
+      } else {
+        errorMessage = 'API Error: ${e.response?.data?['error']?['message'] ?? e.message}';
+      }
+      await _addLog(errorMessage, isError: true);
+      throw errorMessage;
+    } catch (e) {
+      final error = 'Failed to analyze image: $e';
+      await _addLog(error, isError: true);
+      throw error;
+    }
+  }
+
+  Stream<String> streamChat({
+    required String message,
     String? base64Image,
     String? mimeType,
   }) async* {
-    final apiKey = await _getApiKey();
-    if (apiKey == null || apiKey.isEmpty) {
-      throw Exception('API key not found. Please set your OpenRouter API key in the Account settings.');
-    }
-
-    final selectedModel = await _getSelectedModelInfo();
-    if (selectedModel == null) {
-      throw Exception('No model selected');
-    }
-
-    final List<Map<String, dynamic>> messages = [];
-    String? imageDescription;
-    
-    if (base64Image != null) {
-      if (!selectedModel.supportsVision) {
-        // Get image description first
-        imageDescription = await _getImageDescription(
-          message,
-          base64Image,
-          mimeType ?? 'image/jpeg',
-          apiKey,
-        );
-        
-        messages.add({
-          'role': 'system',
-          'content': 'The following is a description of an image that was provided: $imageDescription',
-        });
-        
-        if (message.isNotEmpty) {
-          messages.add({
-            'role': 'user',
-            'content': message,
-          });
-        }
-      } else {
-        messages.add({
-          'role': 'user',
-          'content': [
-            {
-              'type': 'image_url',
-              'image_url': {
-                'url': 'data:$mimeType;base64,$base64Image'
-              }
-            }
-          ]
-        });
-        
-        if (message.isNotEmpty) {
-          messages.add({
-            'role': 'user',
-            'content': message,
-          });
-        }
-      }
-    } else if (message.isNotEmpty) {
-      messages.add({
-        'role': 'user',
-        'content': message,
-      });
-    }
-
-    final client = http.Client();
     try {
-      final response = await client.send(
-        http.Request(
-          'POST',
-          Uri.parse('$_baseUrl/chat/completions'),
-        )
-          ..headers.addAll({
-            'Authorization': 'Bearer $apiKey',
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'https://github.com/yourusername/aeye',
-          })
-          ..body = jsonEncode({
-            'model': selectedModel.id,
-            'messages': messages,
-            'stream': true,
-          }),
+      final model = await (base64Image != null ? _getSelectedImageModel() : _getSelectedModel());
+
+      final response = await _dio.post(
+        '/chat/completions',
+        data: {
+          'model': model,
+          'messages': [
+            {
+              'role': 'user',
+              'content': base64Image != null ? [
+                {'type': 'text', 'text': message},
+                {
+                  'type': 'image_url',
+                  'image_url': {
+                    'url': 'data:${mimeType ?? "image/jpeg"};base64,$base64Image',
+                  },
+                },
+              ] : message,
+            },
+          ],
+          'stream': true,
+          'provider': {
+            'data_collection': 'deny',
+            'require_parameters': true,
+            'allow_fallbacks': false,
+          },
+        },
+        options: Options(
+          responseType: ResponseType.stream,
+        ),
       );
 
-      if (response.statusCode != 200) {
-        final error = await response.stream.bytesToString();
-        throw Exception('Failed to stream message: $error');
-      }
-
-      await for (final chunk in response.stream.transform(utf8.decoder)) {
-        final events = chunk.split('\n\n');
-        for (final event in events) {
-          if (event.trim().isEmpty || event.trim() == 'data: [DONE]') continue;
-          
-          if (event.startsWith('data: ')) {
+      final stream = response.data.stream as Stream<List<int>>;
+      await for (final chunk in stream) {
+        final text = utf8.decode(chunk);
+        final lines = text.split('\n').where((line) => line.isNotEmpty);
+        
+        for (final line in lines) {
+          if (line.startsWith('data: ')) {
+            final data = line.substring(6);
+            if (data == '[DONE]') continue;
+            
             try {
-              final jsonData = jsonDecode(event.substring(6));
-              final content = jsonData['choices']?[0]?['delta']?['content'] as String?;
+              final json = jsonDecode(data);
+              final content = json['choices'][0]['delta']['content'] as String?;
               if (content != null) {
                 yield content;
               }
             } catch (e) {
+              // Skip malformed JSON
               continue;
             }
           }
         }
       }
-    } finally {
-      client.close();
+    } catch (e) {
+      throw 'Failed to stream chat: $e';
     }
   }
 
   Future<void> clearModelsCache() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_modelsCacheKey);
-    
+    await prefs.remove('models_cache');
   }
 } 

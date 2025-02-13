@@ -18,13 +18,14 @@ class ChatView extends StatefulWidget {
 
 class _ChatViewState extends State<ChatView> {
   final TextEditingController _messageController = TextEditingController();
-  final LLMService _llmService = LLMService();
+  LLMService? _llmService;
   late final List<Conversation> _conversations;
   late Conversation _currentConversation;
   bool _isLoading = false;
   String? _pendingImageData;
   String? _pendingImageMime;
   static const String _conversationsKey = 'chat_conversations';
+  static const String _apiKeyPrefKey = 'openrouter_api_key';
 
   @override
   void initState() {
@@ -32,6 +33,7 @@ class _ChatViewState extends State<ChatView> {
     _conversations = <Conversation>[];
     _currentConversation = _createNewConversation();
     _loadConversations();
+    _initializeLLMService();
   }
 
   @override
@@ -99,7 +101,24 @@ class _ChatViewState extends State<ChatView> {
     );
   }
 
+  Future<void> _initializeLLMService() async {
+    final prefs = await SharedPreferences.getInstance();
+    final apiKey = prefs.getString(_apiKeyPrefKey);
+    if (apiKey != null && apiKey.isNotEmpty) {
+      setState(() {
+        _llmService = LLMService(apiKey: apiKey);
+      });
+    }
+  }
+
   Future<void> _sendMessage() async {
+    if (_llmService == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please set your API key in Account Settings')),
+      );
+      return;
+    }
+
     final message = _messageController.text.trim();
     if (message.isEmpty && _pendingImageData == null) return;
 
@@ -151,8 +170,8 @@ class _ChatViewState extends State<ChatView> {
       });
 
       String fullResponse = '';
-      await for (final chunk in _llmService.streamMessage(
-        message,
+      await for (final chunk in _llmService!.streamChat(
+        message: message,
         base64Image: _pendingImageData,
         mimeType: _pendingImageMime,
       )) {
@@ -165,7 +184,7 @@ class _ChatViewState extends State<ChatView> {
       }
 
       // Update the message with final metadata
-      final response = await _llmService.sendMessage(
+      final response = await _llmService!.sendMessage(
         message,
         base64Image: _pendingImageData,
         mimeType: _pendingImageMime,
@@ -410,8 +429,8 @@ class _ChatViewState extends State<ChatView> {
       });
 
       String fullResponse = '';
-      await for (final chunk in _llmService.streamMessage(
-        userMessage.content.text,
+      await for (final chunk in _llmService!.streamChat(
+        message: userMessage.content.text,
         base64Image: userMessage.content.attachments.isNotEmpty 
             ? userMessage.content.attachments.first.data 
             : null,
@@ -427,7 +446,7 @@ class _ChatViewState extends State<ChatView> {
         });
       }
 
-      final response = await _llmService.sendMessage(
+      final response = await _llmService!.sendMessage(
         userMessage.content.text,
         base64Image: userMessage.content.attachments.isNotEmpty 
             ? userMessage.content.attachments.first.data 

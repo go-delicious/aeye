@@ -14,8 +14,8 @@ class _AccountViewState extends State<AccountView> {
   final _apiKeyController = TextEditingController();
   final _searchController = TextEditingController();
   bool _isApiKeyVisible = false;
-  String _selectedMainModel = 'google/gemini-2.0-pro-exp-02-05:free';
-  String _selectedImageModel = 'google/gemini-2.0-pro-exp-02-05:free';
+  String _selectedMainModel = 'google/gemini-2.0-flash-001';
+  String _selectedImageModel = 'google/gemini-2.0-flash-001';
   List<ModelInfo> _allModels = [];
   List<ModelInfo> _filteredModels = [];
   
@@ -24,7 +24,7 @@ class _AccountViewState extends State<AccountView> {
   static const String _imageModelPrefKey = 'selected_image_model';
   static const String _mainModelSystemMsgPrefKey = 'main_model_system_msg';
   static const String _imageModelSystemMsgPrefKey = 'image_model_system_msg';
-  final _llmService = LLMService();
+  LLMService? _llmService;
 
   static const String _defaultMainSystemMsg = 
     'You are a helpful AI assistant with expertise in computer vision and image analysis. '
@@ -71,21 +71,30 @@ class _AccountViewState extends State<AccountView> {
 
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
+    final apiKey = prefs.getString(_apiKeyPrefKey) ?? '';
+    
     setState(() {
-      _apiKeyController.text = prefs.getString(_apiKeyPrefKey) ?? '';
+      _apiKeyController.text = apiKey;
       _selectedMainModel = prefs.getString(_mainModelPrefKey) ?? 'mistralai/mistral-7b-instruct';
       _selectedImageModel = prefs.getString(_imageModelPrefKey) ?? 'google/gemini-pro-vision';
       _mainModelSystemMsg = prefs.getString(_mainModelSystemMsgPrefKey) ?? _defaultMainSystemMsg;
       _imageModelSystemMsg = prefs.getString(_imageModelSystemMsgPrefKey) ?? _defaultImageSystemMsg;
+      
+      if (apiKey.isNotEmpty) {
+        _llmService = LLMService(apiKey: apiKey);
+      }
     });
-    await _fetchModels();
+    
+    if (_llmService != null) {
+      await _fetchModels();
+    }
   }
 
   Future<void> _fetchModels() async {
-    if (_apiKeyController.text.isEmpty) return;
+    if (_llmService == null) return;
 
     try {
-      final models = await _llmService.getAvailableModels();
+      final models = await _llmService!.getAvailableModels();
       setState(() {
         _allModels = models;
         _filteredModels = models;
@@ -102,6 +111,11 @@ class _AccountViewState extends State<AccountView> {
   Future<void> _saveApiKey(String apiKey) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_apiKeyPrefKey, apiKey);
+    
+    setState(() {
+      _llmService = LLMService(apiKey: apiKey);
+    });
+    
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('API Key saved successfully')),
@@ -233,7 +247,7 @@ class _AccountViewState extends State<AccountView> {
 
   Future<void> _refreshModels() async {
     try {
-      await _llmService.clearModelsCache();
+      await _llmService!.clearModelsCache();
       await _fetchModels();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
