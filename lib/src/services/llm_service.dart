@@ -443,13 +443,13 @@ class LLMService {
 
       if (response.statusCode == 200) {
         if (response.data == null || !response.data.containsKey('choices')) {
-          final error = 'Invalid API response: missing choices field';
+          const error = 'Invalid API response: missing choices field';
           await _addLog(error, isError: true);
           throw error;
         }
         final choices = response.data['choices'] as List;
         if (choices.isEmpty) {
-          final error = 'Invalid API response: empty choices list';
+          const error = 'Invalid API response: empty choices list';
           await _addLog(error, isError: true);
           throw error;
         }
