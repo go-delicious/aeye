@@ -72,7 +72,8 @@ class _SettingsViewState extends State<SettingsView> {
 
     // Show persistent scanning snackbar
     if (!mounted) return;
-    late StateSetter snackBarSetState;
+    
+    StateSetter? snackBarSetState;
     final scanningBar = ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: StatefulBuilder(
@@ -89,7 +90,12 @@ class _SettingsViewState extends State<SettingsView> {
                   ),
                 ),
                 const SizedBox(width: 16),
-                Text('Scanning... $_scanTimeLeft seconds remaining'),
+                Expanded(
+                  child: Text(
+                    'Scanning... $_scanTimeLeft seconds remaining',
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
               ],
             );
           },
@@ -98,14 +104,14 @@ class _SettingsViewState extends State<SettingsView> {
       ),
     );
 
-    // Start countdown timer
+    // Start countdown timer after snackBarSetState is initialized
     _scanTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
       if (mounted) {
         setState(() {
           _scanTimeLeft--;
         });
-        // Update the snackbar text
-        snackBarSetState(() {});
+        // Update the snackbar text only if snackBarSetState is initialized
+        snackBarSetState?.call(() {});
         if (_scanTimeLeft <= 0) {
           timer.cancel();
           await _stopScan();
