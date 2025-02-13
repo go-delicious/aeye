@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_blue_plus/flutter_blue_plus.dart' hide BluetoothService;
 import '../services/bluetooth_service.dart';
 import 'settings_controller.dart';
 import 'dart:async';
@@ -21,11 +20,13 @@ class SettingsView extends StatefulWidget {
 
 class _SettingsViewState extends State<SettingsView> {
   final BluetoothService _bluetoothService = BluetoothService();
-  List<BluetoothDevice> _devices = [];
+  final List<BrilliantScannedDevice> _devices = [];
   bool _isScanning = false;
   String? _error;
   int _scanTimeLeft = 0;
   Timer? _scanTimer;
+  StreamSubscription? _scanSubscription;
+  StreamSubscription? _connectionSubscription;
 
   @override
   void initState() {
@@ -36,6 +37,8 @@ class _SettingsViewState extends State<SettingsView> {
   @override
   void dispose() {
     _scanTimer?.cancel();
+    _scanSubscription?.cancel();
+    _connectionSubscription?.cancel();
     _bluetoothService.dispose();
     super.dispose();
   }
@@ -129,12 +132,41 @@ class _SettingsViewState extends State<SettingsView> {
     });
 
     try {
-      final devices = await _bluetoothService.scanForDevices();
-      if (!mounted) return;
-      setState(() {
-        _devices = devices;
-      });
-      scanningBar.close();
+      _scanSubscription = _bluetoothService.scanForDevices().listen(
+        (device) {
+          if (!mounted) return;
+          setState(() {
+            // Remove old entry if exists
+            _devices.removeWhere((d) => d.device.remoteId == device.device.remoteId);
+            // Add new entry
+            _devices.add(device);
+          });
+        },
+        onError: (e) {
+          if (!mounted) return;
+          setState(() {
+            _error = e.toString();
+          });
+          scanningBar.close();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Scan failed: ${e.toString()}'),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        },
+        onDone: () {
+          scanningBar.close();
+          if (mounted && _devices.isEmpty) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('No devices found'),
+                duration: Duration(seconds: 2),
+              ),
+            );
+          }
+        },
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -160,7 +192,8 @@ class _SettingsViewState extends State<SettingsView> {
 
   Future<void> _stopScan() async {
     try {
-      await FlutterBluePlus.stopScan();
+      _scanSubscription?.cancel();
+      await _bluetoothService.stopScan();
     } finally {
       _scanTimer?.cancel();
       if (mounted) {
@@ -172,12 +205,36 @@ class _SettingsViewState extends State<SettingsView> {
     }
   }
 
-  Future<void> _connectToDevice(BluetoothDevice device) async {
+  Future<void> _connectToDevice(BrilliantScannedDevice device) async {
     try {
-      await _bluetoothService.connectToDevice(device);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Connected to ${device.platformName}')),
+      _connectionSubscription?.cancel();
+      _connectionSubscription = _bluetoothService.connectToDevice(device).listen(
+        (state) {
+          if (!mounted) return;
+          switch (state) {
+            case BrilliantConnectionState.connected:
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Connected to ${device.device.platformName}')),
+              );
+              break;
+            case BrilliantConnectionState.dfuConnected:
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Connected to ${device.device.platformName} in DFU mode')),
+              );
+              break;
+            case BrilliantConnectionState.disconnected:
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Disconnected from ${device.device.platformName}')),
+              );
+              break;
+          }
+        },
+        onError: (e) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to connect: ${e.toString()}')),
+          );
+        },
       );
     } catch (e) {
       if (!mounted) return;
@@ -249,81 +306,44 @@ class _SettingsViewState extends State<SettingsView> {
             fontWeight: FontWeight.bold,
           ),
         ),
-        const SizedBox(height: 8),
-        const Text(
-          'Connect to your Brilliant Labs Frame glasses',
-          style: TextStyle(
-            fontSize: 14,
-            color: Colors.grey,
-          ),
-        ),
-        const SizedBox(height: 16),
-        if (_error != null)
-          Card(
-            color: Theme.of(context).colorScheme.errorContainer,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.error,
-                    color: Theme.of(context).colorScheme.error,
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Text(
-                      _error!,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
         const SizedBox(height: 16),
         Row(
           children: [
-            Expanded(
-              child: ElevatedButton.icon(
-                onPressed: _startScan,
-                icon: Icon(_isScanning ? Icons.stop : Icons.search),
-                label: Text(_isScanning ? 'Cancel Scan' : 'Scan for Devices'),
-                style: _isScanning ? ElevatedButton.styleFrom(
-                  backgroundColor: Theme.of(context).colorScheme.error,
-                  foregroundColor: Theme.of(context).colorScheme.onError,
-                ) : null,
-              ),
+            ElevatedButton.icon(
+              onPressed: _startScan,
+              icon: Icon(_isScanning ? Icons.stop : Icons.search),
+              label: Text(_isScanning ? 'Stop Scan' : 'Scan for Devices'),
             ),
           ],
         ),
-        const SizedBox(height: 16),
-        if (_devices.isEmpty && !_isScanning)
-          const Center(
-            child: Text('No devices found'),
-          )
-        else if (_devices.isNotEmpty)
-          Card(
-            child: ListView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: _devices.length,
-              itemBuilder: (context, index) {
-                final device = _devices[index];
-                final isConnected = _bluetoothService.isConnected;
-                
-                return ListTile(
-                  title: Text(device.platformName),
-                  subtitle: Text(device.remoteId.toString()),
-                  trailing: isConnected
-                    ? const Icon(Icons.bluetooth_connected, color: Colors.green)
-                    : const Icon(Icons.bluetooth),
-                  onTap: () => _connectToDevice(device),
-                );
-              },
+        if (_error != null) ...[
+          const SizedBox(height: 16),
+          Text(
+            _error!,
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.error,
             ),
           ),
+        ],
+        if (_devices.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          ListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: _devices.length,
+            itemBuilder: (context, index) {
+              final device = _devices[index];
+              return ListTile(
+                title: Text(device.device.platformName),
+                subtitle: Text('RSSI: ${device.rssi}'),
+                trailing: ElevatedButton(
+                  onPressed: () => _connectToDevice(device),
+                  child: const Text('Connect'),
+                ),
+              );
+            },
+          ),
+        ],
       ],
     );
   }
