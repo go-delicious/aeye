@@ -18,7 +18,7 @@ class SettingsView extends StatefulWidget {
   State<SettingsView> createState() => _SettingsViewState();
 }
 
-class _SettingsViewState extends State<SettingsView> {
+class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver {
   final BluetoothService _bluetoothService = BluetoothService();
   final List<BrilliantScannedDevice> _devices = [];
   bool _isScanning = false;
@@ -33,16 +33,33 @@ class _SettingsViewState extends State<SettingsView> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initializeBluetooth();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _stopScan();
     _scanTimer?.cancel();
     _scanSubscription?.cancel();
     _connectionSubscription?.cancel();
     _bluetoothService.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _stopScan();
+    }
+  }
+
+  @override
+  void deactivate() {
+    _stopScan();
+    super.deactivate();
   }
 
   Future<void> _initializeBluetooth() async {
