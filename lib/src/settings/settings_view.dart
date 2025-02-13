@@ -27,8 +27,10 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
   Timer? _scanTimer;
   StreamSubscription? _scanSubscription;
   StreamSubscription? _connectionSubscription;
+  StreamSubscription? _batterySubscription;
   BrilliantConnectionState _connectionState = BrilliantConnectionState.disconnected;
   BrilliantScannedDevice? _connectedDevice;
+  int? _batteryLevel;
 
   @override
   void initState() {
@@ -44,6 +46,7 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
     _scanTimer?.cancel();
     _scanSubscription?.cancel();
     _connectionSubscription?.cancel();
+    _batterySubscription?.cancel();
     _bluetoothService.dispose();
     super.dispose();
   }
@@ -158,7 +161,7 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
           if (!mounted) return;
           setState(() {
             // Remove old entry if exists
-            _devices.removeWhere((d) => d.device.remoteId == device.device.remoteId);
+            _devices.removeWhere((d) => d.deviceName == device.deviceName);
             // Add new entry
             _devices.add(device);
           });
@@ -233,6 +236,17 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
   Future<void> _connectToDevice(BrilliantScannedDevice device) async {
     try {
       _connectionSubscription?.cancel();
+      _batterySubscription?.cancel();
+
+      // Listen for battery updates
+      _batterySubscription = _bluetoothService.batteryLevel.listen((level) {
+        if (mounted) {
+          setState(() {
+            _batteryLevel = level;
+          });
+        }
+      });
+
       _connectionSubscription = _bluetoothService.connectToDevice(device).listen(
         (state) {
           if (!mounted) return;
@@ -243,20 +257,21 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
           switch (state) {
             case BrilliantConnectionState.connected:
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Connected to ${device.device.platformName}')),
+                SnackBar(content: Text('Connected to ${device.deviceName}')),
               );
               break;
             case BrilliantConnectionState.dfuConnected:
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Connected to ${device.device.platformName} in DFU mode')),
+                SnackBar(content: Text('Connected to ${device.deviceName} in DFU mode')),
               );
               break;
             case BrilliantConnectionState.disconnected:
               setState(() {
                 _connectedDevice = null;
+                _batteryLevel = null;
               });
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Disconnected from ${device.device.platformName}')),
+                SnackBar(content: Text('Disconnected from ${device.deviceName}')),
               );
               break;
           }
@@ -266,6 +281,7 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
           setState(() {
             _connectionState = BrilliantConnectionState.disconnected;
             _connectedDevice = null;
+            _batteryLevel = null;
           });
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Failed to connect: ${e.toString()}')),
@@ -277,6 +293,7 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
       setState(() {
         _connectionState = BrilliantConnectionState.disconnected;
         _connectedDevice = null;
+        _batteryLevel = null;
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to connect: ${e.toString()}')),
@@ -373,7 +390,7 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              _connectedDevice!.device.platformName,
+                              _connectedDevice!.deviceName,
                               style: const TextStyle(
                                 fontWeight: FontWeight.bold,
                                 fontSize: 16,
@@ -396,6 +413,7 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
                           setState(() {
                             _connectionState = BrilliantConnectionState.disconnected;
                             _connectedDevice = null;
+                            _batteryLevel = null;
                           });
                         },
                         style: ElevatedButton.styleFrom(
@@ -406,13 +424,99 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
                       ),
                     ],
                   ),
-                  if (_connectionState == BrilliantConnectionState.connected) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      'Signal Strength: ${_connectedDevice!.rssi} dBm',
-                      style: Theme.of(context).textTheme.bodyMedium,
-                    ),
-                  ],
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      if (_batteryLevel != null) ...[
+                        Icon(
+                          _batteryLevel! > 80 ? Icons.battery_full :
+                          _batteryLevel! > 60 ? Icons.battery_6_bar :
+                          _batteryLevel! > 40 ? Icons.battery_4_bar :
+                          _batteryLevel! > 20 ? Icons.battery_2_bar :
+                          Icons.battery_alert,
+                          color: _batteryLevel! <= 20 ? Theme.of(context).colorScheme.error : null,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Battery: $_batteryLevel%',
+                          style: TextStyle(
+                            color: _batteryLevel! <= 20 ? Theme.of(context).colorScheme.error : null,
+                            fontWeight: _batteryLevel! <= 20 ? FontWeight.bold : null,
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                      ],
+                      if (_connectionState == BrilliantConnectionState.connected) ...[
+                        const Icon(Icons.signal_cellular_alt),
+                        const SizedBox(width: 8),
+                        Text('Signal: ${_connectedDevice!.rssi} dBm'),
+                      ],
+                    ],
+                  ),
+                  const Divider(height: 24),
+                  // Device Details Section
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Device Details',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                _buildDetailRow(
+                                  icon: Icons.bluetooth,
+                                  label: 'Device Name',
+                                  value: _connectedDevice!.deviceName,
+                                ),
+                                const SizedBox(height: 4),
+                                _buildDetailRow(
+                                  icon: Icons.signal_cellular_alt,
+                                  label: 'Signal Strength',
+                                  value: '${_connectedDevice!.rssi} dBm',
+                                ),
+                                const SizedBox(height: 4),
+                                _buildDetailRow(
+                                  icon: Icons.battery_std,
+                                  label: 'Battery Level',
+                                  value: _batteryLevel != null ? '$_batteryLevel%' : 'Unknown',
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                _buildDetailRow(
+                                  icon: Icons.link,
+                                  label: 'Connection Status',
+                                  value: _connectionState == BrilliantConnectionState.dfuConnected
+                                      ? 'DFU Mode'
+                                      : 'Connected',
+                                ),
+                                const SizedBox(height: 4),
+                                _buildDetailRow(
+                                  icon: Icons.watch_later_outlined,
+                                  label: 'Connected Since',
+                                  value: DateTime.now().toString().split('.')[0],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -436,11 +540,11 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
             itemBuilder: (context, index) {
               final device = _devices[index];
               // Don't show the connected device in the list
-              if (_connectedDevice?.device.remoteId == device.device.remoteId) {
+              if (_connectedDevice?.deviceName == device.deviceName) {
                 return const SizedBox.shrink();
               }
               return ListTile(
-                title: Text(device.device.platformName),
+                title: Text(device.deviceName),
                 subtitle: Text('RSSI: ${device.rssi}'),
                 trailing: ElevatedButton(
                   onPressed: () => _connectToDevice(device),
@@ -450,6 +554,46 @@ class _SettingsViewState extends State<SettingsView> with WidgetsBindingObserver
             },
           ),
         ],
+      ],
+    );
+  }
+
+  Widget _buildDetailRow({
+    required IconData icon,
+    required String label,
+    required String value,
+  }) {
+    return Row(
+      children: [
+        Icon(
+          icon,
+          size: 16,
+          color: Theme.of(context).colorScheme.secondary,
+        ),
+        const SizedBox(width: 4),
+        Expanded(
+          child: RichText(
+            text: TextSpan(
+              style: DefaultTextStyle.of(context).style,
+              children: [
+                TextSpan(
+                  text: '$label: ',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.secondary,
+                    fontSize: 12,
+                  ),
+                ),
+                TextSpan(
+                  text: value,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w500,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ],
     );
   }
