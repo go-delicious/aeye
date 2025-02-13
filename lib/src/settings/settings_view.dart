@@ -27,6 +27,8 @@ class _SettingsViewState extends State<SettingsView> {
   Timer? _scanTimer;
   StreamSubscription? _scanSubscription;
   StreamSubscription? _connectionSubscription;
+  BrilliantConnectionState _connectionState = BrilliantConnectionState.disconnected;
+  BrilliantScannedDevice? _connectedDevice;
 
   @override
   void initState() {
@@ -211,6 +213,10 @@ class _SettingsViewState extends State<SettingsView> {
       _connectionSubscription = _bluetoothService.connectToDevice(device).listen(
         (state) {
           if (!mounted) return;
+          setState(() {
+            _connectionState = state;
+            _connectedDevice = device;
+          });
           switch (state) {
             case BrilliantConnectionState.connected:
               ScaffoldMessenger.of(context).showSnackBar(
@@ -223,6 +229,9 @@ class _SettingsViewState extends State<SettingsView> {
               );
               break;
             case BrilliantConnectionState.disconnected:
+              setState(() {
+                _connectedDevice = null;
+              });
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(content: Text('Disconnected from ${device.device.platformName}')),
               );
@@ -231,6 +240,10 @@ class _SettingsViewState extends State<SettingsView> {
         },
         onError: (e) {
           if (!mounted) return;
+          setState(() {
+            _connectionState = BrilliantConnectionState.disconnected;
+            _connectedDevice = null;
+          });
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Failed to connect: ${e.toString()}')),
           );
@@ -238,6 +251,10 @@ class _SettingsViewState extends State<SettingsView> {
       );
     } catch (e) {
       if (!mounted) return;
+      setState(() {
+        _connectionState = BrilliantConnectionState.disconnected;
+        _connectedDevice = null;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to connect: ${e.toString()}')),
       );
@@ -316,6 +333,68 @@ class _SettingsViewState extends State<SettingsView> {
             ),
           ],
         ),
+        if (_connectionState != BrilliantConnectionState.disconnected && _connectedDevice != null) ...[
+          const SizedBox(height: 16),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.bluetooth_connected),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _connectedDevice!.device.platformName,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                              ),
+                            ),
+                            Text(
+                              _connectionState == BrilliantConnectionState.dfuConnected
+                                  ? 'Connected (DFU Mode)'
+                                  : 'Connected',
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.secondary,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      ElevatedButton(
+                        onPressed: () {
+                          _bluetoothService.disconnect();
+                          setState(() {
+                            _connectionState = BrilliantConnectionState.disconnected;
+                            _connectedDevice = null;
+                          });
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Theme.of(context).colorScheme.error,
+                          foregroundColor: Theme.of(context).colorScheme.onError,
+                        ),
+                        child: const Text('Disconnect'),
+                      ),
+                    ],
+                  ),
+                  if (_connectionState == BrilliantConnectionState.connected) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'Signal Strength: ${_connectedDevice!.rssi} dBm',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
         if (_error != null) ...[
           const SizedBox(height: 16),
           Text(
@@ -333,6 +412,10 @@ class _SettingsViewState extends State<SettingsView> {
             itemCount: _devices.length,
             itemBuilder: (context, index) {
               final device = _devices[index];
+              // Don't show the connected device in the list
+              if (_connectedDevice?.device.remoteId == device.device.remoteId) {
+                return const SizedBox.shrink();
+              }
               return ListTile(
                 title: Text(device.device.platformName),
                 subtitle: Text('RSSI: ${device.rssi}'),
