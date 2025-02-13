@@ -111,24 +111,26 @@ class _SettingsViewState extends State<SettingsView> {
 
     // Start countdown timer after snackBarSetState is initialized
     _scanTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
-      if (mounted) {
-        setState(() {
-          _scanTimeLeft--;
-        });
-        // Update the snackbar text only if snackBarSetState is initialized
-        snackBarSetState?.call(() {});
-        if (_scanTimeLeft <= 0) {
-          timer.cancel();
-          await _stopScan();
-          scanningBar.close();
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(_devices.isEmpty ? 'No devices found' : 'Scan complete: ${_devices.length} devices found'),
-                duration: const Duration(seconds: 2),
-              ),
-            );
-          }
+      if (!mounted || !_isScanning) {
+        timer.cancel();
+        return;
+      }
+      setState(() {
+        _scanTimeLeft--;
+      });
+      // Update the snackbar text only if snackBarSetState is initialized
+      snackBarSetState?.call(() {});
+      if (_scanTimeLeft <= 0) {
+        timer.cancel();
+        await _stopScan();
+        scanningBar.close();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(_devices.isEmpty ? 'No devices found' : 'Scan complete: ${_devices.length} devices found'),
+              duration: const Duration(seconds: 2),
+            ),
+          );
         }
       }
     });
@@ -148,7 +150,10 @@ class _SettingsViewState extends State<SettingsView> {
           if (!mounted) return;
           setState(() {
             _error = e.toString();
+            _isScanning = false;
+            _scanTimeLeft = 0;
           });
+          _scanTimer?.cancel();
           scanningBar.close();
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -158,6 +163,12 @@ class _SettingsViewState extends State<SettingsView> {
           );
         },
         onDone: () {
+          if (!mounted) return;
+          setState(() {
+            _isScanning = false;
+            _scanTimeLeft = 0;
+          });
+          _scanTimer?.cancel();
           scanningBar.close();
           if (mounted && _devices.isEmpty) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -173,7 +184,10 @@ class _SettingsViewState extends State<SettingsView> {
       if (!mounted) return;
       setState(() {
         _error = e.toString();
+        _isScanning = false;
+        _scanTimeLeft = 0;
       });
+      _scanTimer?.cancel();
       scanningBar.close();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -181,14 +195,6 @@ class _SettingsViewState extends State<SettingsView> {
           duration: const Duration(seconds: 2),
         ),
       );
-    } finally {
-      _scanTimer?.cancel();
-      if (mounted) {
-        setState(() {
-          _isScanning = false;
-          _scanTimeLeft = 0;
-        });
-      }
     }
   }
 
